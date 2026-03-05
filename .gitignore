@@ -1,7 +1,23 @@
 # Python
 __pycache__/
-*.pyc
+*.py[cod]
+*$py.class
 
-# Virtual environments
-venv/
-backend/venv/
+# Virtual environments (matches any venv folder at any depth)
+**/venv/
+.venv/
+
+# Outputs (ignores all images and anything in output folders)
+**/outputs/
+*.jpg
+*.png
+*.jpeg
+
+# OS / editor
+.DS_Store
+.vscode/
+.idea/
+
+# SECRETS (Matches ALL .env files anywhere in the project)
+**/.env
+.env*
