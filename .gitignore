@@ -21,3 +21,5 @@ __pycache__/
 # SECRETS (Matches ALL .env files anywhere in the project)
 **/.env
 .env*
+
+*.db
