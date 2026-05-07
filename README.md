@@ -2,8 +2,9 @@
 
 A full-stack AI art generation tool that turns text prompts into styled artwork. Describe your vision, pick a style, mood, and palette — the backend refines your prompt with Gemini AI and generates an image via Stable Diffusion or Pollinations.
 
-![Editor](docs/screenshot-editor.png)
-![Gallery](docs/screenshot-gallery.png)
+<img width="1470" height="828" alt="image" src="https://github.com/user-attachments/assets/50a08d27-7946-46c4-9549-ed5c8471eb75" />
+
+<img width="1470" height="832" alt="image" src="https://github.com/user-attachments/assets/5a5810ec-b049-428f-83be-f6a9be5fe19e" />
 
 ---
 
