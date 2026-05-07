@@ -9,11 +9,12 @@ load_dotenv()
 
 # 2. NOW IMPORT OTHER MODULES
 from fastapi import FastAPI, HTTPException, Request, BackgroundTasks
+from pydantic import Field as PydanticField
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
-from sqlmodel import Session
+from sqlmodel import Session, select
 
 # Import your local modules
 from services.database import engine, create_db_and_tables, ImageMetadata  # Updated path
@@ -21,6 +22,7 @@ from services.generator import (
     generate_placeholder,
     refine_prompt_with_gemini,
     generate_with_diffusers,
+    generate_with_imagen,
 )
 
 GENAI_PROVIDER = os.getenv("GENAI_PROVIDER", "gemini").lower()
@@ -38,6 +40,10 @@ class GenerateRequest(BaseModel):
     style: str | None = None
     mood: str | None = None
     palette: str | None = None
+    creator: str | None = None
+
+class RatingRequest(BaseModel):
+    rating: int = PydanticField(..., ge=1, le=5)
 
 # OUTPUT_DIR = Path(__file__).resolve().parent.parent / "outputs" / "images"
 # OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -76,13 +82,63 @@ def get_image(filename: str):
     return FileResponse(path)
 
 @app.get("/gallery")
-def gallery(limit: int = 10):
-    limit = max(1, min(limit, 50))
-    files = sorted(OUTPUT_DIR.glob("*.png"), key=lambda p: p.stat().st_mtime, reverse=True)[:limit]
-    return {
-        "count": len(files),
-        "items": [{"filename": f.name, "image_path": f"/outputs/images/{f.name}"} for f in files],
-    }
+def gallery(limit: int = 20, offset: int = 0):
+    limit = max(1, min(limit, 100))
+    with Session(engine) as session:
+        total = session.exec(select(ImageMetadata)).all()
+        statement = (
+            select(ImageMetadata)
+            .order_by(ImageMetadata.timestamp.desc())
+            .offset(offset)
+            .limit(limit)
+        )
+        records = session.exec(statement).all()
+
+    items = []
+    for record in records:
+        items.append({
+            "id": record.id,
+            "filename": record.filename,
+            "image_path": f"/outputs/images/{record.filename}",
+            "original_prompt": record.original_prompt,
+            "refined_prompt": record.refined_prompt,
+            "style": record.style,
+            "mood": record.mood,
+            "palette": record.palette,
+            "timestamp": record.timestamp.isoformat(),
+            "rating": record.rating,
+            "creator": record.creator,
+            "seed": record.seed,
+            "steps": record.steps,
+            "guidance_scale": record.guidance_scale,
+        })
+    return {"total": len(total), "count": len(items), "offset": offset, "items": items}
+
+
+@app.delete("/api/generations/{generation_id}")
+def delete_generation(generation_id: int):
+    with Session(engine) as session:
+        record = session.get(ImageMetadata, generation_id)
+        if not record:
+            raise HTTPException(status_code=404, detail="Generation not found")
+        file_path = OUTPUT_DIR / record.filename
+        if file_path.exists():
+            file_path.unlink()
+        session.delete(record)
+        session.commit()
+    return {"status": "deleted", "id": generation_id}
+
+@app.patch("/api/generations/{generation_id}/rating")
+def rate_generation(generation_id: int, payload: RatingRequest):
+    with Session(engine) as session:
+        record = session.get(ImageMetadata, generation_id)
+        if not record:
+            raise HTTPException(status_code=404, detail="Generation not found")
+        record.rating = payload.rating
+        session.add(record)
+        session.commit()
+        session.refresh(record)
+    return {"id": record.id, "rating": record.rating}
 
 # @app.post("/generate")
 # async def generate_art(payload: GenerateRequest, http: Request, background_tasks: BackgroundTasks):
@@ -127,8 +183,8 @@ def gallery(limit: int = 10):
 
 @app.post("/generate")
 async def generate_art(payload: GenerateRequest, http: Request):
-    # 1. Refine the prompt (This is fast)
-    refined_prompt = refine_prompt_with_gemini(
+    # 1. Refine the prompt
+    refined_prompt, prompt_source = refine_prompt_with_gemini(
         payload.prompt, payload.style, payload.mood, payload.palette
     )
 
@@ -139,12 +195,13 @@ async def generate_art(payload: GenerateRequest, http: Request):
     try:
         if IMAGE_PROVIDER == "diffusers":
             generate_with_diffusers(refined_prompt, OUTPUT_DIR, filename)
+        elif IMAGE_PROVIDER == "placeholder":
+            generate_placeholder(refined_prompt, OUTPUT_DIR, filename)
         else:
-            generate_placeholder(payload.prompt, payload.style, payload.mood, payload.palette, OUTPUT_DIR, filename)
+            generate_with_imagen(refined_prompt, OUTPUT_DIR, filename)
     except Exception as e:
         print(f"Generation failed: {e}")
-        # Fallback to placeholder so the UI doesn't crash
-        generate_placeholder(payload.prompt, payload.style, payload.mood, payload.palette, OUTPUT_DIR, filename)
+        generate_placeholder(refined_prompt, OUTPUT_DIR, filename)
 
     # 3. Save to Database
     with Session(engine) as session:
@@ -154,7 +211,8 @@ async def generate_art(payload: GenerateRequest, http: Request):
             refined_prompt=refined_prompt,
             style=payload.style,
             mood=payload.mood,
-            palette=payload.palette
+            palette=payload.palette,
+            creator=payload.creator,
         )
         session.add(meta)
         session.commit()
@@ -162,9 +220,10 @@ async def generate_art(payload: GenerateRequest, http: Request):
     # 4. Now that the file is 100% SAVED, return the URL
     base_url = str(http.base_url).rstrip("/")
     return {
-        "status": "completed", # Changed from 'processing'
+        "status": "completed",
         "filename": filename,
         "refined_prompt": refined_prompt,
+        "prompt_source": prompt_source,
         "image_url": f"{base_url}/outputs/images/{filename}",
         "mode": IMAGE_PROVIDER
     }
